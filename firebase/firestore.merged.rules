@@ -1,0 +1,121 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // This rule allows anyone with your Firestore database reference to view, edit,
+    // and delete all data in your Firestore database. It is useful for getting
+    // started, but it is configured to expire after 30 days because it
+    // leaves your app open to attackers. At that time, all client
+    // requests to your Firestore database will be denied.
+    //
+    // Make sure to write security rules for your app before that time, or else
+    // all client requests to your Firestore database will be denied until you Update
+    // your rules
+    match /{document=**} {
+      allow read, write: if request.time < timestamp.date(2026, 1, 6);
+    }
+  
+// Dedicated LalaGO permissions; existing application rules preserved above.
+  function profile() { return get(/databases/$(database)/documents/lalago_work/workspace/users/$(request.auth.uid)).data; }
+  function active() { return request.auth != null && profile().accountStatus == 'active' && profile().role in ['admin','staff']; }
+  function admin() { return active() && profile().role == 'admin'; }
+  function owns(d) { return active() && d.assignedUid == request.auth.uid; }
+  function task(id) { return get(/databases/$(database)/documents/lalago_tasks/$(id)).data; }
+  function visible(d) { return admin() || owns(d); }
+  function validTask(d) {
+   return d.title is string && d.title.size() > 0 && d.title.size() <= 200
+    && d.description is string && d.expectedOutcome is string && d.category is string
+    && d.priority in ['Low','Normal','High','Urgent']
+    && d.progress is int && d.progress >= 0 && d.progress <= 100
+    && d.startDate is timestamp && d.deadline is timestamp && d.deadline >= d.startDate
+    && d.status in ['todo','pending','ongoing','hold','review','revision','completed','reviewed']
+    && (!(d.status in ['completed','reviewed']) || d.progress == 100)
+    && d.updatedAt == request.time;
+  }
+  function historyLinked(id,d,from) {
+   let h = getAfter(/databases/$(database)/documents/lalago_task_history/$(d.lastHistoryId)).data;
+   return h.taskId == id && h.actorUid == request.auth.uid && h.assignedUid == d.assignedUid && h.from == from && h.to == d.status && h.createdAt == request.time;
+  }
+  function staffTransition(a,b) {
+   return a == b || (a == 'todo' && b == 'pending') || (a in ['todo','pending'] && b == 'ongoing') || (a in ['ongoing','hold','revision'] && b in ['ongoing','hold','review'])
+    || (a in ['todo','ongoing','hold','review','revision'] && b == 'completed');
+  }
+  match /lalago_work/workspace/users/{uid} {
+   allow read: if request.auth != null && (request.auth.uid == uid || admin());
+   // First administrator is provisioned only by the trusted owner tool.
+   allow create: if admin() && request.resource.data.uid == uid && request.resource.data.role == 'staff'
+    && request.resource.data.accountStatus == 'active' && request.resource.data.email is string
+    && request.resource.data.fullName is string && request.resource.data.fullName.size() > 0
+    && request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time;
+   allow update: if active() && request.auth.uid == uid && resource.data.role == 'staff'
+    && resource.data.get('invited', false) == true && resource.data.get('joinedAt', null) == null
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['joinedAt'])
+    && request.resource.data.joinedAt == request.time;
+   allow delete: if false;
+   allow update: if admin() && uid != request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['accountStatus','updatedAt']) && request.resource.data.accountStatus in ['active','inactive'] && request.resource.data.updatedAt == request.time;
+  }
+  match /lalago_tasks/{id} {
+   allow read: if visible(resource.data);
+   allow create: if active() && validTask(request.resource.data) && request.resource.data.createdBy == request.auth.uid && request.resource.data.createdAt == request.time && historyLinked(id,request.resource.data,'new')
+    && (admin() || (owns(request.resource.data) && request.resource.data.status in ['todo','ongoing'] && request.resource.data.progress == 0 && request.resource.data.feedback == ''));
+   allow update: if validTask(request.resource.data) && historyLinked(id,request.resource.data,resource.data.status)
+    && request.resource.data.assignedUid == resource.data.assignedUid
+    && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt
+    && (request.resource.data.status != 'reviewed' || (admin() && resource.data.status in ['completed','reviewed']))
+    && (admin() || (owns(resource.data) && resource.data.status == 'completed'
+      && resource.data.get('deletedAt', null) == null && request.resource.data.deletedAt == request.time
+      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deletedAt','updatedAt','lastHistoryId']))
+     || (owns(resource.data)
+      && (resource.data.status in ['todo','ongoing','hold','revision']
+       || (resource.data.status == 'pending' && request.resource.data.status == 'ongoing')
+       || (resource.data.status == 'review' && request.resource.data.status == 'completed' && request.resource.data.priority == resource.data.priority))
+      && staffTransition(resource.data.status,request.resource.data.status)
+      && (resource.data.status != 'pending' || request.resource.data.priority == resource.data.priority)
+      && (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','progress','priority','updatedAt','lastHistoryId'])
+       || (resource.data.status in ['todo','revision','ongoing','hold'] && request.resource.data.status == resource.data.status
+        && (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title','description','category','priority','startDate','deadline','expectedOutcome','updatedAt','lastHistoryId'])
+         || (resource.data.get('deletedAt', null) == null && request.resource.data.deletedAt == request.time
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deletedAt','updatedAt','lastHistoryId'])))))));
+   allow delete: if false;
+  }
+  match /lalago_task_history/{id} {
+   allow read: if visible(resource.data);
+   allow create: if active() && request.resource.data.actorUid == request.auth.uid && request.resource.data.createdAt == request.time
+    && request.resource.data.message is string
+    && getAfter(/databases/$(database)/documents/lalago_tasks/$(request.resource.data.taskId)).data.lastHistoryId == id
+    && getAfter(/databases/$(database)/documents/lalago_tasks/$(request.resource.data.taskId)).data.assignedUid == request.resource.data.assignedUid;
+   allow update,delete: if false;
+  }
+  match /lalago_task_updates/{id} {
+   allow read: if visible(resource.data);
+   allow create: if active() && request.resource.data.actorUid == request.auth.uid && request.resource.data.createdAt == request.time
+    && request.resource.data.assignedUid == task(request.resource.data.taskId).assignedUid
+    && visible(task(request.resource.data.taskId))
+    && task(request.resource.data.taskId).status in ['todo','ongoing','hold','revision','review','completed','reviewed']
+    && request.resource.data.accomplishment is string && request.resource.data.accomplishment.size() > 0
+    && request.resource.data.problems is string && request.resource.data.nextAction is string
+    && request.resource.data.progress is int && request.resource.data.progress >= 0 && request.resource.data.progress <= 100
+    && request.resource.data.attachments is list && request.resource.data.attachments.size() == 0;
+   allow update,delete: if false;
+  }
+  match /lalago_notifications/{id} {
+   allow read: if active() && resource.data.recipientUid == request.auth.uid;
+   allow create: if admin() && request.resource.data.createdAt == request.time && request.resource.data.read == false;
+   allow update: if active() && resource.data.recipientUid == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']) && request.resource.data.read == true;
+   allow delete: if false;
+  }
+  match /lalago_weekly_plans/{id} {
+   allow read: if visible(resource.data);
+   allow create: if owns(request.resource.data) && request.resource.data.status == 'pending' && request.resource.data.createdAt == request.time
+    && request.resource.data.updatedAt == request.time && request.resource.data.weekStart is timestamp && request.resource.data.taskIds is list
+    && (!('feedback' in request.resource.data) || request.resource.data.feedback == '');
+   allow update: if request.resource.data.assignedUid == resource.data.assignedUid && request.resource.data.updatedAt == request.time
+    && ((admin() && request.resource.data.status in ['approved','rejected','revision'] && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','feedback','updatedAt']))
+     || (owns(resource.data) && resource.data.status in ['pending','rejected','revision'] && request.resource.data.status == 'pending'
+      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['taskIds','status','updatedAt'])));
+   allow delete: if false;
+  }
+  match /lalago_reports/{id} { allow read: if visible(resource.data); allow write: if false; }
+}
+}

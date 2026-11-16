@@ -1,0 +1,15 @@
+rules_version = '2';
+// Merge with existing Storage rules. Never replace shared project rules blindly.
+service firebase.storage {
+ match /b/{bucket}/o {
+  function profile() { return firestore.get(/databases/(default)/documents/lalago_work/workspace/users/$(request.auth.uid)).data; }
+  function active() { return request.auth != null && profile().accountStatus == 'active'; }
+  function admin() { return active() && profile().role == 'admin'; }
+  match /lalago_work/{uid}/{taskId}/{updateId}/{fileName} {
+   allow read: if active() && (admin() || request.auth.uid == uid);
+   // No-billing requirement: Firebase Storage requires Blaze. Uploads disabled.
+   allow create: if false;
+   allow update,delete: if false;
+  }
+ }
+}

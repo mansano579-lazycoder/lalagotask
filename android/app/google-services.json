@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "382599354134",
+    "project_id": "dormfinder-sulu",
+    "storage_bucket": "dormfinder-sulu.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:382599354134:android:8f58e4e986c17017376237",
+        "android_client_info": {
+          "package_name": "com.lalago.work"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAa0-684JPGv1c-2ZGC7KgKE6Hg-aTM0X8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
